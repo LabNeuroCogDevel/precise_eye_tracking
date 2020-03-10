@@ -75,7 +75,6 @@ def circle(name_count, frame):
 
   original_image = cv2.cvtColor(original_image, cv2.COLOR_GRAY2RGB)
 
-  # BUG? - why do this for each? only second is returned?
   for x, y, r in max_cor:
     circled_cases = cv2.circle(original_image, (x,y), r, (0,0,255))
 
@@ -84,7 +83,8 @@ def circle(name_count, frame):
 def ccast(yx, r, t, width, height):
     """
     at angle t and radius r
-    return if x,y is within range
+    return 2d matrix: 1 where (x,y) within. 0 otherwise
+    yx should be 2 item list: vector of y pos, vector of x pos
     >>> plt.imshow(ccast(yx,22,180,width,height))
     """
     #Cast it to a new coordinates
@@ -104,7 +104,7 @@ def sum_angles(yx, r, w, h, by=2):
     s = np.sum([ccast(yx, r, a, w, h) for a in angles], axis=0)
     return(s)
 
-def plot_radlist(rs):
+def plot_radlist(rs, radi):
     import matplotlib.pyplot as plt
     ns = math.sqrt(len(rs))
     fg, ax = plt.subplots(math.ceil(ns),math.ceil(ns))
@@ -118,12 +118,36 @@ def plot_radlist(rs):
         ax[x,y].axis('off')
         ax[x,y].annotate("%d" % mv, xy=mi, color='white')
 
-
-def circle_vectorized(frame, N=2, show=False):
+def draw_circles(frame, xyrs, show=False):
     """
-    use vectorized matricies to calc circle
+    draw circles on FRAME wih x,y,r provided by XYRS
+    return new frame wih circles drawn
+    circles are colored red, green, blue based on input order
+    """
+    circled_cases = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+    for i, xyr in enumerate(xyrs):
+        (x,y,r) = xyr
+        # change color for each circle
+        # 1st=red, 2nd=green, 3rd=blue, 4th=red, ....
+        color=[0,0,0]
+        color[i%3] = 255
+
+        # cv2.circle side-effect: updates input
+        cv2.circle(circled_cases, (x,y), r, color)
+        
+    if show:
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.imshow(circled_cases)
+
+    return(circled_cases)
+
+def circle_vectorized(frame, N=2, msg="", show=False, draw=False):
+    """
+    use vectorized matricies to calc N circle from FRAME
     >>> frame=threshold(cv2.imread('./analysis_set/kang00013.png'),100,8)
-    >>> # import matplotlib.pyplot as plt; plt.ion(); plt.imshow(frame);
+    >>> # import matplotlib.pyplot as plt; plt.ion(); plt.imshow(frame)
+    >>> [xyr, cnts, circled_cases] = circle_vectorized(frame, N=2, show=True)
     """
     (height, width) = frame.shape
     (Rmin, Rmax) = (20, 50)
@@ -142,8 +166,7 @@ def circle_vectorized(frame, N=2, show=False):
     rs = [sum_angles(yx, r, width, height) for r in radi]
 
     # view it maybe
-    if show: plot_radlist(rs)
-    
+    if show: plot_radlist(rs, radi)
     
     # # -- best only -- 
     # (ri, yi, xi) = np.unravel_index(np.argmax(rs),shape)
@@ -153,18 +176,23 @@ def circle_vectorized(frame, N=2, show=False):
     # -- top N --
     rs = np.array(rs)
     i = np.argpartition(rs.flatten(), -N)[-N:]
-    vryx = [[rs[ii], radi[ii[0]], *ii[1:] ] for ii in
-             [np.unravel_index(ii, rs.shape) for ii in i]]
-    
+    max3didx = [np.unravel_index(ii, rs.shape) for ii in i]
+    # grab the counts (v) from the 3d matrix rs. get the radius, y, and x pos
+    vryx = [[rs[ii], radi[ii[0]], *ii[1:]] for ii in max3didx]
+    # argpartition is quick, but does not return in order
+    vryx = sorted(vryx, key=lambda a: a[0], reverse=True)
   
-    print('big_circle vryx')
+    print(msg + ' big_circle vryx')
     print(vryx)
-
-    original_image = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-
-    for (v, y, x, r) in vryx:
-      circled_cases = cv2.circle(original_image, (x,y), r, (0,0,255))
   
-    return(vryx)
+    # want in two vars: list of xyr, and list of values
+    max_cor = [z[3:0:-1] for z in vryx] 
+    max_collec = [z[0] for z in vryx]
+    
+    # don't draw the cirlces if we dont need them
+    if not draw:
+      return max_cor, max_collec
 
+    # we want circles. draw them. maybe show them too
+    circled_cases = draw_circles(frame, max_cor, show)
     return max_cor, max_collec, circled_cases

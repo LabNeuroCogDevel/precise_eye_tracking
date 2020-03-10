@@ -4,9 +4,10 @@ import cv2
 import sys
 import random
 import pickle
+import multiprocessing
 import pic_analyze
 from eye_canny import canny
-from eye_circle import circle
+from eye_circle import circle, circle_vectorized
 from csv_analysis import read
 from plot_data import plotting
 from threshold import threshold
@@ -16,7 +17,9 @@ from glint_detection import circle_glint
 #The video frame is mostly 60 fps
 class PupilTracking():
 
-    def __init__(self, video, timing_fname="", num_tests=5, fps=60, show=False):
+    def __init__(self, video,
+                 timing_fname="", num_tests=5,
+                 fps=60, show=False, ncpu=2):
         """
         Three phases: 
         1. determination the best way to transfrom an image into computer readable, 
@@ -30,33 +33,49 @@ class PupilTracking():
         Number of image traisl you want
         """
         super().__init__()
+        self.video = video
         self.fps = fps
         self.show = show
         self.num_tests = num_tests
+        self.ncpu = ncpu
         if timing_fname == "":
             timing_fname = 'input/testing_set/testing_1/10997_20180818_mri_1_view.csv'
             print("Warning: using default timing %s" % timing_fname)
-        
+        self.timing_fname = timing_fname 
 
-        # convert video to series of frames
-        self.number_frame = self.to_frame(video)
-        print('To frame successful')
+        # initilze other values
+        self.V, self.L, self.H, self.number_frame = (0, 0, 0, 0)
+        self.thres_pic = ""
 
+    def set_threshold(self):
+        """
+        use random frames to guess at best threshold
+        """
         # get random frames to test on
-        self.random_num = self.rand(self.number_frame, self.num_tests)
+        random_num = self.rand()
         try:
-            self.V, self.L, self.H, self.name_pic = self.pre_test(self.random_num, self.num_tests)
-        except:
-            print('Resizing factors too big to be useful')
+            self.pre_test(random_num)
+        except Exception as e:
+            print(e)
+            print('Error: Resizing factors too big to be useful')
             exit()
 
-        #list of list that contains the whole set of testing data
-        sets = self.file_data(timing_fname)
-        print(sets)
-        # [[6.0, 8.0, 10.0, 16.0], [20.0, 22.0, 24.0, 30.0], [40.0, 42.0, 44.0, 50.0], ....
+    def run_all(self):
+        # convert video to series of frames
+        self.to_frame()
+        print('To frame successful')
+        
+        # find best L nad H thresholds
+        self.set_threshold()
+        print(self.V, self.L, self.H, self.thres_pic)
 
-        #Now print the results out and take a look
-        print(self.V, self.L, self.H, self.name_pic)
+        #list of list that contains the whole set of testing data
+        sets = self.file_data()
+        print(sets)
+        # [[6.0, 8.0, 10.0, 16.0],
+        #  [20.0, 22.0, 24.0, 30.0],
+        #  [40.0, 42.0, 44.0, 50.0], ....
+
 
         #Now do the analysis set by set// Starting to code the main part of the program        
         print('pretesting finished, starting analying the collection pictures using the paramaters')
@@ -67,7 +86,7 @@ class PupilTracking():
         print('Starting to plot the data')
         plotting(output_sets)
 
-    def frame_retrieve(self, sets, L, H):
+    def frame_retrieve(self, sets):
         output_sets = []
         #Only need to get the frame around the critical area
         #60 frame/second
@@ -94,40 +113,37 @@ class PupilTracking():
         collections = [show_center, show_loc, hide_center, hide_pic]
 
         #Read the critical frame from the folder
-        output_sets.append(self.critical_frame(collections, L, H))
+        output_sets.append(self.critical_frame(collections))
 
         return output_sets
 
-    #Append every frame data to the dictionary and return it back in a big listy
-    def critical_frame(self, collections, L, H):
-        count = 0
-        dic = {}
-        dic['s_center'] = []
-        dic['s_loc'] = []
-        dic['h_center'] = []
-        dic['h_loc'] = []
+    def eye_at_frame(self, frame_i):
+        """
+        find eye at every frame in collections for threshold L and H
+        @param frame_i video frame index
+        @param self.L lower threshold (see pre_test)
+        @param self.H upper threshold (see pre_test)
+        """
+        case_name = 'analysis_set/kang%05d.png'%frame_i
+        image = threshold(cv2.imread(case_name), self.L, self.H)
+        max_cor, max_collec = circle_vectorized(image, msg=str(count))
+        return max_cor
 
+    #Append every frame data to the dictionary and return it back in a big listy
+    def critical_frame(self, collections):
+        """
+        find eye at every frame in collections for threshold L and H
+        @param collections frame index for each (4) condition type
+        >>> collections = [ [1,2,3], [4,5,6], [7,8,9], [10,11,12]]
+        >>> self.critical_frame(collections)
+        """
+        idx = ['s_center', 's_loc', 'h_center','h_loc']
+        dic = { k: []  for k in idx }
         ncol = len(collections)
         for i in range(0, ncol):
-            for file in collections[i]:
-                case_name = 'analysis_set/kang%05d.png'%file
-                image = cv2.imread(case_name)
-                outcome = threshold(image, L, H)
-                max_cor, max_collec, circled_cases= circle(count, outcome)
-                if i == 0:
-                    dic['s_center'].append(max_cor)
-                elif i == 1:
-                    dic['s_loc'].append(max_cor)
-                elif i == 2:
-                    dic['h_center'].append(max_cor)
-                elif i == 3:
-                    dic['h_loc'].append(max_cor)
-                else:
-                    print('Something went wrong')
-                    exit()
-
-                count += 1
-            count = 0
+            p = multiprocessing.Pool(self.ncpu)
+            dic[idx[i]] = p.map(self.eye_at_frame(collections[i]))
+            p.close()
             print('{}/{} section done'.format(i+1, ncol))
             print('\n\n')
         return dic
@@ -135,9 +151,9 @@ class PupilTracking():
 
         
         # self.video_analyze(self.L, self.H)
-    def file_data(self, timing_fname):
+    def file_data(self):
         current = []
-        cue, vgs, dly, mgs = read(timing_fname)
+        cue, vgs, dly, mgs = read(self.timing_fname)
         for i in range(0, len(cue)):
             current.append([cue[i], vgs[i], dly[i], mgs[i]])
         #Now start to narrow down the analysis rang
@@ -145,40 +161,39 @@ class PupilTracking():
         return current
 
 
-    def pre_test(self, random, k):
-        grand_test = []
-        for case in random:
-            #Read the file using the name constituted by the random number and naming conventions
-            case_name = 'frame_testing/kang%05d.png'%case
-            image = cv2.imread(case_name)
+    def pre_test(self, random_fnum):
+        """
+        @param random_fnum list of numbers - becomes frame filename to read from
+        """
+        grand_test = [determine(cv2.imread('frame_testing/kang%05d.png'%i),
+                                ncpu=self.ncpu)
+                      for i in random_fnum]
+        grand_test.sort(reverse=True)
 
-            #Find the best parameters for different threshold of one image of 20 images picked randomly
-            result = determine(image, k)
-            grand_test.append(result)
-            #For the sake of keeping track of process
-            k = k - 1
-
-        grand_test.sort()
         #Best of the best should be
-        result = grand_test[len(grand_test) - 1]
-        #[(circle_1+circle_2), lower, uppert, 'frame_testing/kang%05d.png'%count]
-        V, L, H, name = result
-        #Here returned the best parameters there is
-        return V, L, H, name
+        self.V, self.L, self.H, self.thres_pic = grand_test[0]
 
-    #To get 20 random frame to test out of all the frames
-    def rand(self, number_frame, k):
+    def rand(self):
+        """
+        To get NUM_TESTS random frames to test out thres params
+        @param self.number_frame
+        @param self.num_tests
+        """
         rand = []
-        for i in range(k):
-            r = random.randint(0, number_frame)
-            if r not in rand: rand.append(r)
-
+        for i in range(self.num_tests):
+            r = random.randint(0, self.number_frame)
+            if r not in rand:
+                rand.append(r)
         return rand
 
-    #Method to convert the whole video into frames
-    def to_frame(self, video, i = 0):
+    def to_frame(self):
+        """
+        Method to convert the whole video into frames
+        @param self.video video filename to read in
+        sets self.number_frame 
+        """
         print('Starting to convert video to frames')
-        cap = cv2.VideoCapture(video)
+        cap = cv2.VideoCapture(self.video)
         while(cap.isOpened()):
             ret, frame = cap.read()
             if ret == False:
@@ -197,8 +212,9 @@ class PupilTracking():
             cv2.imwrite('frame_testing/kang%05d.png'%i,frame)
             #Then throw the image to threshold to process
             i+=1
+
         #Total number of frames
-        return i
+        self.number_frame = i
 
 
 if __name__ == '__main__':
@@ -206,12 +222,27 @@ if __name__ == '__main__':
     # usage if wrong number of input args
     if len(sys.argv) < 2 or len(sys.argv) > 3:
         print("USAGE: %s video.mov [timing.csv]" % sys.argv[0])
+        print("\t %s input/testing_set/testing_1/output.mov" % sys.argv[0])
         exit()
 
     # pass all cli arguments (video, maybe timing) into class
     ######################################################################
     #TODO: change num_tests to 20 later
     ######################################################################
-    PupilTracking(*sys.argv[1:], show=True, num_tests=5)
+    pup = PupilTracking(*sys.argv[1:], show=True, num_tests=5)
+    pup.run_all()
 
 
+def quick()
+    "play with functions"
+    pup = PupilTracking('input/testing_set/testing_1/output.mov')
+    #pup.to_frame()
+    pup.number_frame = 4805
+    #pup.set_threshold()
+    pup.L = 83
+    pup.H = 255
+    pup.V = 65
+    pup.thres_pic = 'frame_testing/kang00033.png'
+    img = cv2.imread(pup.thres_pic)
+    frame = threshold(img, pup.L, pup.H)
+    [xyr, v, img ]= circle_vectorized(frame,draw=True, show=True)

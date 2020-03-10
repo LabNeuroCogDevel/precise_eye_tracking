@@ -2,7 +2,7 @@ import cv2
 import pickle
 from eye_blur import blur
 from eye_canny import canny
-from eye_circle import circle
+from eye_circle import circle, circle_vectorized
 from threshold import threshold
 from glint_detection import circle_glint
 
@@ -27,7 +27,7 @@ def image_choice():
     #Only read ceetain images by choice to reduce the runtime of it
     task = cv2.imread('frame_testing/kang%05d.png'%i, cv2.IMREAD_UNCHANGED)
     #Circle the pupil
-    coordinate, maximum = circle(i, task)
+    coordinate, maximum = circle_vectorized(task, msg=str(i))
     #Circle the glint
     coordinate_glint, maximum_glint = circle_glint(i, task)
     data_pupil = to_dict(coordinate, maximum)
